@@ -1,0 +1,1506 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+USE WORK.COMANDOS_LCD4BITS_REVC.ALL;
+
+entity LIB_LCD_MENU_TECLADO is
+    GENERIC(
+        FPGA_CLK : INTEGER := 100_000_000
+    );
+    PORT(
+        CLK        : IN  STD_LOGIC;
+        SW_RESET   : IN  STD_LOGIC;  -- Switch para reset desde pantalla resumen
+        SW_START   : IN  STD_LOGIC;  -- (No usado actualmente - reservado)
+        BTN_RESET  : IN  STD_LOGIC;  -- Botón para resetear contadores
+        IR_IN      : IN  STD_LOGIC;  -- Sensor infrarrojo 1 (entrada directa del sensor)
+        IR_IN2     : IN  STD_LOGIC;  -- Sensor infrarrojo 2 (punto de sensado magnético)
+        IR_IN3     : IN  STD_LOGIC;  -- Sensor infrarrojo 3 (punto de sensado color)
+        IR_IN4     : IN  STD_LOGIC;  -- Sensor infrarrojo 4 (punto de sensado metálico)
+        IR_IN5     : IN  STD_LOGIC;  -- Sensor infrarrojo 5 (punto de sensado altura)
+        IR_IN6     : IN  STD_LOGIC;  -- Sensor infrarrojo 6 (punto final para aceptados)
+        IR_IN7     : IN  STD_LOGIC;  -- Sensor infrarrojo 7 (punto final para rechazados)
+        IR_HEIGHT1 : IN  STD_LOGIC;  -- Sensor de altura 1 (base - todos los objetos)
+        IR_HEIGHT2 : IN  STD_LOGIC;  -- Sensor de altura 2 (mediano y grande)
+        IR_HEIGHT3 : IN  STD_LOGIC;  -- Sensor de altura 3 (solo grande)
+        MAGNETIC_IN : IN  STD_LOGIC; -- Sensor magnético (1 = magnético, 0 = no magnético)
+        METALIC_IN  : IN  STD_LOGIC; -- Sensor metálico (1 = metálico, 0 = no metálico)
+        UART_RX    : IN  STD_LOGIC;  -- Recepción serial desde cámara
+        COLUMNAS   : IN  STD_LOGIC_VECTOR(3 DOWNTO 0);
+        FILAS      : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        RS         : OUT STD_LOGIC;
+        RW         : OUT STD_LOGIC;
+        ENA        : OUT STD_LOGIC;  -- Enable LCD
+        DATA_LCD   : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        LEDS       : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        -- Salidas para Motor (L298N)
+        MOTOR_ENA  : OUT STD_LOGIC;  -- Enable del motor
+        MOTOR_IN1  : OUT STD_LOGIC;  -- Dirección motor
+        MOTOR_IN2  : OUT STD_LOGIC;  -- Dirección motor
+        -- Salida para Servo Clasificador
+        SERVO_OUT  : OUT STD_LOGIC;  -- PWM para servo clasificador
+        -- Displays de 7 segmentos
+        D0_AN      : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);  -- Display 0 Ánodos (Aceptados)
+        D0_SEG     : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);  -- Display 0 Segmentos
+        D1_AN      : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);  -- Display 1 Ánodos (Rechazados)
+        D1_SEG     : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);  -- Display 1 Segmentos
+        -- Salida serial para debug
+        UART_TX    : OUT STD_LOGIC   -- Transmisión serial para mostrar resultados
+    );
+end LIB_LCD_MENU_TECLADO;
+
+architecture Behavioral of LIB_LCD_MENU_TECLADO is
+
+    CONSTANT NUM_INSTRUCCIONES : INTEGER := 90;
+
+    COMPONENT LIB_TEC_MATRICIAL_4x4_INTESC_RevA is
+    GENERIC( FREQ_CLK : INTEGER );
+    PORT(
+        CLK        : IN  STD_LOGIC;
+        COLUMNAS   : IN  STD_LOGIC_VECTOR(3 DOWNTO 0);
+        FILAS      : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        BOTON_PRES : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        IND        : OUT STD_LOGIC;
+        LEDS       : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
+    );
+    end COMPONENT;
+
+    -- Componente de control de motor
+    COMPONENT ControlMotor is
+    PORT( 
+        CLK      : in  STD_LOGIC;
+        RESET    : in  STD_LOGIC;
+        AVANZAR  : in  STD_LOGIC;
+        ENA      : out STD_LOGIC;
+        IN1      : out STD_LOGIC;
+        IN2      : out STD_LOGIC
+    );
+    END COMPONENT;
+    
+    -- Componente del sensor infrarrojo
+    COMPONENT InfraRojo is
+    GENERIC(
+        FPGA_CLK : INTEGER;
+        DEBOUNCE_TIME_MS : INTEGER
+    );
+    PORT( 
+        CLK              : in  STD_LOGIC;
+        IR_IN            : in  STD_LOGIC;
+        OBJETO_DETECTADO : out STD_LOGIC;
+        IR_RAW           : out STD_LOGIC
+    );
+    END COMPONENT;
+
+    -- Componente del servo clasificador
+    COMPONENT servo_control is
+    PORT( 
+        clk              : in  STD_LOGIC;
+        objeto_rechazado : in  STD_LOGIC;
+        servo            : out STD_LOGIC
+    );
+    END COMPONENT;
+
+    -- Componente del contador con displays
+    COMPONENT Contador_Display is
+    GENERIC(
+        FPGA_CLK : INTEGER
+    );
+    PORT(
+        CLK              : IN  STD_LOGIC;
+        RESET            : IN  STD_LOGIC;
+        INC_ACEPTADOS    : IN  STD_LOGIC;
+        INC_RECHAZADOS   : IN  STD_LOGIC;
+        CONTADOR_LLENO   : OUT STD_LOGIC;
+        D0_AN            : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        D0_SEG           : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);
+        D1_AN            : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        D1_SEG           : OUT STD_LOGIC_VECTOR(7 DOWNTO 0)
+    );
+    END COMPONENT;
+
+    COMPONENT PROCESADOR_LCD4BITS_REVC is
+    GENERIC(
+        FPGA_CLK : INTEGER;
+        NUM_INST : INTEGER
+    );
+    PORT(
+        CLK        : IN  STD_LOGIC;
+        VECTOR_MEM : IN  STD_LOGIC_VECTOR(8 DOWNTO 0);
+        C1A,C2A,C3A,C4A,C5A,C6A,C7A,C8A : IN  STD_LOGIC_VECTOR(39 DOWNTO 0);
+        RS, RW, ENA : OUT STD_LOGIC;
+        BD_LCD     : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);
+        DATA       : OUT STD_LOGIC_VECTOR(3 DOWNTO 0);
+        DIR_MEM    : OUT INTEGER RANGE 0 TO NUM_INSTRUCCIONES
+    );
+    end COMPONENT;
+
+    type ram is array (0 to NUM_INSTRUCCIONES) of std_logic_vector(8 downto 0);
+    signal INST : ram := (others => (others => '0'));
+    
+    signal blcd        : std_logic_vector(7 downto 0) := (others => '0');
+    signal vector_mem  : STD_LOGIC_VECTOR(8 DOWNTO 0) := (others => '0');
+    signal c1s,c2s,c3s,c4s,c5s,c6s,c7s,c8s : std_logic_vector(39 downto 0) := (others => '0');
+    signal dir_mem     : integer range 0 to NUM_INSTRUCCIONES := 0;
+
+    signal tecla_detectada : STD_LOGIC_VECTOR(3 DOWNTO 0);
+    signal ind_tecla       : STD_LOGIC;
+    signal ind_tecla_prev  : STD_LOGIC := '0';  -- Anti-debounce: estado anterior
+    signal tecla_procesada : STD_LOGIC := '0';  -- Flag para evitar múltiples detecciones
+    
+    signal estado_menu : INTEGER range 0 to 5 := 0;
+    signal estado_menu_prev : INTEGER range 0 to 5 := 0;  -- Para detectar cambios de menú
+    signal lcd_actualizar : STD_LOGIC := '1';  -- Flag para actualizar LCD solo cuando cambia menú
+    signal color_selec  : INTEGER range 0 to 3 := 0;
+    signal altura_selec : INTEGER range 0 to 3 := 0;
+    signal magnet_selec : INTEGER range 0 to 2 := 0;
+    signal metal_selec  : INTEGER range 0 to 2 := 0;  -- 1=Si, 2=No
+    signal ultima_tecla : STD_LOGIC_VECTOR(3 DOWNTO 0) := x"0";  -- Para detectar secuencia A+B
+    
+    -- Señales para control del motor
+    signal motor_activo : STD_LOGIC := '0';  -- Señal de control para el motor
+    signal timeout_contador : INTEGER := 0;  -- Contador para timeout en modo continuo
+    signal banda_detenida_timeout : STD_LOGIC := '0';  -- '1' cuando la banda se detiene por timeout
+    
+    -- Señales del sensor infrarrojo 1
+    signal sensor_ir_detectado : STD_LOGIC := '0';  -- '1' cuando el IR1 detecta objeto
+    signal sensor_ir_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 2
+    signal sensor_ir2_detectado : STD_LOGIC := '0';  -- '1' cuando el IR2 detecta objeto
+    signal sensor_ir2_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 3
+    signal sensor_ir3_detectado : STD_LOGIC := '0';  -- '1' cuando el IR3 detecta objeto
+    signal sensor_ir3_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 4
+    signal sensor_ir4_detectado : STD_LOGIC := '0';  -- '1' cuando el IR4 detecta objeto
+    signal sensor_ir4_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 5 (punto de sensado altura)
+    signal sensor_ir5_detectado : STD_LOGIC := '0';  -- '1' cuando el IR5 detecta objeto
+    signal sensor_ir5_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 6 (punto final para aceptados)
+    signal sensor_ir6_detectado : STD_LOGIC := '0';  -- '1' cuando el IR6 detecta objeto
+    signal sensor_ir6_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales del sensor infrarrojo 7 (punto final para rechazados)
+    signal sensor_ir7_detectado : STD_LOGIC := '0';  -- '1' cuando el IR7 detecta objeto
+    signal sensor_ir7_raw       : STD_LOGIC := '0';  -- Señal raw para debug
+    
+    -- Señales de los sensores de altura
+    signal sensor_height1_detectado : STD_LOGIC := '0';  -- Sensor altura 1 (base)
+    signal sensor_height2_detectado : STD_LOGIC := '0';  -- Sensor altura 2 (medio)
+    signal sensor_height3_detectado : STD_LOGIC := '0';  -- Sensor altura 3 (alto)
+    
+    -- Señales para el proceso de sensado
+    type estado_sensado_t is (IDLE, ESPERA_IR2, PAUSA_MAGNETICO, LEYENDO_MAGNETICO,
+                               VERIFICANDO_MAGNETICO,
+                               AVANZANDO_A_IR3, PAUSA_COLOR, ESPERANDO_COLOR,
+                               VERIFICANDO_COLOR,
+                               AVANZANDO_A_IR4, PAUSA_METALICO, LEYENDO_METALICO,
+                               VERIFICANDO_METALICO,
+                               AVANZANDO_A_IR5, PAUSA_ALTURA, LEYENDO_ALTURA,
+                               VERIFICANDO_ALTURA, ESPERA_POST_ALTURA,
+                               AVANZANDO_A_IR6, PARADO_IR6,
+                               AVANZANDO_A_IR7, PARADO_IR7);
+    signal estado_sensado : estado_sensado_t := IDLE;
+    signal contador_espera : INTEGER := 0;
+    constant TIEMPO_ESPERA_2S : INTEGER := FPGA_CLK * 2;  -- 2 segundos para sensado
+    constant TIEMPO_ESPERA_1S : INTEGER := FPGA_CLK;      -- 1 segundo post-altura
+    constant TIMEOUT_SIN_OBJETOS : INTEGER := FPGA_CLK * 10; -- 10 segundos sin objetos (modo continuo)
+    signal lectura_magnetico : STD_LOGIC := '0';  -- Resultado del sensor magnético
+    signal lectura_metalico  : STD_LOGIC := '0';  -- Resultado del sensor metálico
+    signal lectura_altura    : STD_LOGIC_VECTOR(1 downto 0) := "00";  -- Resultado altura: 01=Chico, 10=Mediano, 11=Grande
+    
+    -- Señal de control del servo
+    signal objeto_rechazado : STD_LOGIC := '0';  -- '1' = rechazado (servo 135°), '0' = aceptado (servo 0°)
+    
+    -- Señales para recepción UART (9600 baud)
+    constant BAUD_RATE : INTEGER := 9600;
+    constant CLKS_PER_BIT : INTEGER := FPGA_CLK / BAUD_RATE;
+    signal rx_clk_count : INTEGER range 0 to CLKS_PER_BIT - 1 := 0;
+    signal rx_bit_index : INTEGER range 0 to 7 := 0;
+    signal rx_byte : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    signal rx_done : STD_LOGIC := '0';
+    type rx_state_t is (RX_IDLE, RX_START, RX_DATA, RX_STOP);
+    signal rx_state : rx_state_t := RX_IDLE;
+    signal uart_rx_sync : STD_LOGIC := '1';
+    signal uart_rx_sync2 : STD_LOGIC := '1';
+    
+    -- Color detectado por la cámara (recibido por serial)
+    -- "01" = Blanco, "10" = Negro, "11" = Rojo
+    signal color_detectado : STD_LOGIC_VECTOR(1 downto 0) := "00";
+    signal color_recibido : STD_LOGIC := '0';  -- Flag que indica si se recibió color
+    
+    -- Señales para transmisión UART
+    signal tx_send_start : STD_LOGIC := '0';  -- Renombrado para evitar conflicto con TX_START
+    signal tx_byte : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    signal tx_busy : STD_LOGIC := '0';
+    signal tx_done : STD_LOGIC := '0';
+    signal tx_clk_count : INTEGER range 0 to CLKS_PER_BIT - 1 := 0;
+    signal tx_bit_index : INTEGER range 0 to 9 := 0;
+    type tx_state_t is (TX_IDLE, TX_START, TX_DATA, TX_STOP);
+    signal tx_state : tx_state_t := TX_IDLE;
+    signal tx_out : STD_LOGIC := '1';
+    
+    -- Señales para el contador de objetos
+    signal inc_aceptados   : STD_LOGIC := '0';  -- Pulso para incrementar aceptados
+    signal inc_rechazados  : STD_LOGIC := '0';  -- Pulso para incrementar rechazados
+    signal contador_lleno  : STD_LOGIC := '0';  -- '1' cuando algún contador = 15
+    signal btn_reset_sync  : STD_LOGIC := '0';  -- Botón reset sincronizado
+    signal btn_reset_prev  : STD_LOGIC := '0';  -- Para detección de flanco
+    signal reset_contadores : STD_LOGIC := '0'; -- Reset combinado (BTN_RESET o SW_RESET)
+
+
+begin
+
+    LEDS <= tecla_detectada;
+    
+    -- Instanciación del módulo del sensor infrarrojo 1
+    U_SENSOR_IR: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN,
+        OBJETO_DETECTADO => sensor_ir_detectado,
+        IR_RAW           => sensor_ir_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 2 (punto de sensado magnético)
+    U_SENSOR_IR2: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN2,
+        OBJETO_DETECTADO => sensor_ir2_detectado,
+        IR_RAW           => sensor_ir2_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 3 (punto de sensado color)
+    U_SENSOR_IR3: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN3,
+        OBJETO_DETECTADO => sensor_ir3_detectado,
+        IR_RAW           => sensor_ir3_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 4 (punto de sensado metálico)
+    U_SENSOR_IR4: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN4,
+        OBJETO_DETECTADO => sensor_ir4_detectado,
+        IR_RAW           => sensor_ir4_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 5 (punto de sensado altura)
+    U_SENSOR_IR5: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN5,
+        OBJETO_DETECTADO => sensor_ir5_detectado,
+        IR_RAW           => sensor_ir5_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 6 (punto final para aceptados)
+    U_SENSOR_IR6: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN6,
+        OBJETO_DETECTADO => sensor_ir6_detectado,
+        IR_RAW           => sensor_ir6_raw
+    );
+    
+    -- Instanciación del módulo del sensor infrarrojo 7 (punto final para rechazados)
+    U_SENSOR_IR7: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_IN7,
+        OBJETO_DETECTADO => sensor_ir7_detectado,
+        IR_RAW           => sensor_ir7_raw
+    );
+    
+    -- Instanciación de sensores de altura
+    U_SENSOR_HEIGHT1: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_HEIGHT1,
+        OBJETO_DETECTADO => sensor_height1_detectado,
+        IR_RAW           => open
+    );
+    
+    U_SENSOR_HEIGHT2: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_HEIGHT2,
+        OBJETO_DETECTADO => sensor_height2_detectado,
+        IR_RAW           => open
+    );
+    
+    U_SENSOR_HEIGHT3: InfraRojo
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        DEBOUNCE_TIME_MS => 10
+    )
+    PORT MAP(
+        CLK              => CLK,
+        IR_IN            => IR_HEIGHT3,
+        OBJETO_DETECTADO => sensor_height3_detectado,
+        IR_RAW           => open
+    );
+    
+    -- Instanciación del servo clasificador
+    U_SERVO: servo_control
+    PORT MAP(
+        clk              => CLK,
+        objeto_rechazado => objeto_rechazado,
+        servo            => SERVO_OUT
+    );
+    
+    -- Instanciación del contador con displays
+    U_CONTADOR: Contador_Display
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK
+    )
+    PORT MAP(
+        CLK              => CLK,
+        RESET            => reset_contadores,  -- Reset combinado
+        INC_ACEPTADOS    => inc_aceptados,
+        INC_RECHAZADOS   => inc_rechazados,
+        CONTADOR_LLENO   => contador_lleno,
+        D0_AN            => D0_AN,
+        D0_SEG           => D0_SEG,
+        D1_AN            => D1_AN,
+        D1_SEG           => D1_SEG
+    );
+    
+    -- Asignación de salida UART
+    UART_TX <= tx_out;
+    
+    -- Instanciación del módulo de control de motor
+    U_MOTOR: ControlMotor
+    PORT MAP(
+        CLK      => CLK,
+        RESET    => '0',         -- No usamos reset en el motor
+        AVANZAR  => motor_activo,
+        ENA      => MOTOR_ENA,
+        IN1      => MOTOR_IN1,
+        IN2      => MOTOR_IN2
+    );
+
+    U_TECLADO: LIB_TEC_MATRICIAL_4x4_INTESC_RevA
+    GENERIC MAP(FREQ_CLK => FPGA_CLK)
+    PORT MAP(
+        CLK        => CLK,
+        COLUMNAS   => COLUMNAS,
+        FILAS      => FILAS,
+        BOTON_PRES => tecla_detectada,
+        IND        => ind_tecla,
+        LEDS       => open
+    );
+
+    U_LCD: PROCESADOR_LCD4BITS_REVC
+    GENERIC MAP(
+        FPGA_CLK => FPGA_CLK,
+        NUM_INST => NUM_INSTRUCCIONES
+    )
+    PORT MAP(
+        CLK        => CLK,
+        VECTOR_MEM => VECTOR_MEM,
+        C1A=>C1S, C2A=>C2S, C3A=>C3S, C4A=>C4S,
+        C5A=>C5S, C6A=>C6S, C7A=>C7S, C8A=>C8S,
+        RS => RS, RW => RW, ENA => ENA, BD_LCD => BLCD, DATA => DATA_LCD,
+        DIR_MEM => DIR_MEM
+    );
+
+    VECTOR_MEM <= INST(DIR_MEM);
+
+    -- CONTROL DEL MENÚ CON ANTI-DEBOUNCE MEJORADO
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            -- Guardar estado anterior de ind_tecla para detectar flanco ascendente
+            ind_tecla_prev <= ind_tecla;
+            
+            -- Reset por switch tiene prioridad
+            if estado_menu = 5 and SW_RESET = '1' then
+                estado_menu <= 0;
+                color_selec <= 0;
+                altura_selec <= 0;
+                magnet_selec <= 0;
+                metal_selec <= 0;
+                tecla_procesada <= '0';
+            -- ANTI-DEBOUNCE: Solo procesar en flanco ascendente de ind_tecla
+            elsif ind_tecla = '1' and ind_tecla_prev = '0' and tecla_procesada = '0' then
+                tecla_procesada <= '1';  -- Marcar como procesada
+                case estado_menu is
+                    when 0 =>
+                        if tecla_detectada = x"F" then
+                            estado_menu <= 1;
+                        end if;
+                        
+                    when 1 =>
+                        case tecla_detectada is
+                            when x"1" => color_selec <= 1;
+                            when x"2" => color_selec <= 2;
+                            when x"3" => color_selec <= 3;
+                            when x"F" => estado_menu <= 2;
+                            when others => null;
+                        end case;
+                        
+                    when 2 =>
+                        case tecla_detectada is
+                            when x"1" => altura_selec <= 1;
+                            when x"2" => altura_selec <= 2;
+                            when x"3" => altura_selec <= 3;
+                            when x"F" => estado_menu <= 3;
+                            when others => null;
+                        end case;
+                        
+                    when 3 =>
+                        case tecla_detectada is
+                            when x"1" => magnet_selec <= 1;
+                            when x"2" => magnet_selec <= 2;
+                            when x"F" => estado_menu <= 4;
+                            when others => null;
+                        end case;
+                    
+                    when 4 =>
+                        -- Submenú Metal
+                        case tecla_detectada is
+                            when x"1" => metal_selec <= 1;
+                            when x"2" => metal_selec <= 2;
+                            when x"F" => estado_menu <= 5;
+                            when others => null;
+                        end case;
+                        
+                    when 5 =>
+                        -- En resumen, detectar secuencia A+B para volver al menú
+                        if tecla_detectada = x"A" then
+                            -- Tecla A presionada, guardar
+                            ultima_tecla <= x"A";
+                        elsif tecla_detectada = x"B" and ultima_tecla = x"A" then
+                            -- Secuencia A+B detectada, volver al menú inicial
+                            estado_menu <= 0;
+                            color_selec <= 0;
+                            altura_selec <= 0;
+                            magnet_selec <= 0;
+                            metal_selec <= 0;
+                            ultima_tecla <= x"0";
+                        elsif tecla_detectada /= x"A" and tecla_detectada /= x"0" then
+                            -- Cualquier otra tecla resetea la secuencia
+                            ultima_tecla <= x"0";
+                        end if;
+                        
+                    when others => null;
+                end case;
+            -- Reset del flag cuando se suelta la tecla
+            elsif ind_tecla = '0' then
+                tecla_procesada <= '0';
+            end if;
+        end if;
+    end process;
+    
+    -- MÁQUINA DE ESTADOS PARA EL PROCESO DE SENSADO
+    -- Proceso completo:
+    --   1. IR1 detecta objeto -> motor enciende
+    --   2. Llega a IR2 -> para la banda, espera 3.5 segundos
+    --   3. Lee sensor magnético y guarda lectura
+    --   4. Avanza hacia IR3
+    --   5. Llega a IR3 -> para la banda, espera 3.5 segundos para recibir color
+    --   6. Recibe color por serial desde la cámara
+    --   7. Avanza hacia IR4
+    --   8. Llega a IR4 -> para la banda, espera 3.5 segundos
+    --   9. Lee sensor metálico y guarda lectura
+    --  10. Avanza hacia IR5
+    --  11. Llega a IR5 -> para la banda (fin del ciclo), envía resultados por serial
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            if estado_menu = 5 then
+                -- Solo en pantalla de resumen permitimos el proceso
+                case estado_sensado is
+                    when IDLE =>
+                        -- Esperando que IR1 detecte un objeto
+                        contador_espera <= 0;
+                        objeto_rechazado <= '0';  -- Servo en 90° al inicio
+                        inc_aceptados <= '0';
+                        inc_rechazados <= '0';
+                        
+                        -- Verificar si el contador está lleno
+                        if contador_lleno = '1' then
+                            -- Sistema pausado, esperar reset de contadores
+                            motor_activo <= '0';
+                            timeout_contador <= 0;
+                            banda_detenida_timeout <= '0';
+                        elsif SW_START = '1' then
+                            -- MODO CONTINUO: Gestión de timeout
+                            if sensor_ir_detectado = '1' then
+                                -- Objeto detectado: reiniciar timeout y activar motor
+                                estado_sensado <= ESPERA_IR2;
+                                motor_activo <= '1';
+                                timeout_contador <= 0;
+                                banda_detenida_timeout <= '0';
+                            elsif banda_detenida_timeout = '0' then
+                                -- Motor activo, incrementar contador de timeout
+                                motor_activo <= '1';
+                                if timeout_contador >= TIMEOUT_SIN_OBJETOS then
+                                    -- Timeout alcanzado: detener banda
+                                    motor_activo <= '0';
+                                    banda_detenida_timeout <= '1';
+                                    timeout_contador <= 0;
+                                else
+                                    timeout_contador <= timeout_contador + 1;
+                                end if;
+                            else
+                                -- Banda detenida por timeout, esperando objeto
+                                motor_activo <= '0';
+                            end if;
+                        else
+                            -- MODO PAUSADO: Solo activar con objeto detectado
+                            motor_activo <= '0';
+                            timeout_contador <= 0;
+                            banda_detenida_timeout <= '0';
+                            if sensor_ir_detectado = '1' then
+                                estado_sensado <= ESPERA_IR2;
+                                motor_activo <= '1';
+                            end if;
+                        end if;
+                        
+                    when ESPERA_IR2 =>
+                        -- Motor activo, esperando llegar a IR2
+                        motor_activo <= '1';
+                        if sensor_ir2_detectado = '1' then
+                            motor_activo <= '0';  -- Parar motor
+                            estado_sensado <= PAUSA_MAGNETICO;
+                            contador_espera <= 0;
+                        end if;
+                        
+                    when PAUSA_MAGNETICO =>
+                        -- Pausa de 2 segundos para sensado magnético
+                        motor_activo <= '0';
+                        if contador_espera >= TIEMPO_ESPERA_2S then
+                            estado_sensado <= LEYENDO_MAGNETICO;
+                        else
+                            contador_espera <= contador_espera + 1;
+                        end if;
+                        
+                    when LEYENDO_MAGNETICO =>
+                        -- Leer sensor magnético (1 = magnético, 0 = no magnético)
+                        motor_activo <= '0';
+                        lectura_magnetico <= MAGNETIC_IN;
+                        estado_sensado <= VERIFICANDO_MAGNETICO;
+                        
+                    when VERIFICANDO_MAGNETICO =>
+                        -- Verificar si cumple condición magnética del usuario
+                        motor_activo <= '0';
+                        if (magnet_selec = 1 and lectura_magnetico = '0') or 
+                           (magnet_selec = 2 and lectura_magnetico = '1') then
+                            -- Cumple: continuar normalmente
+                            estado_sensado <= AVANZANDO_A_IR3;
+                        else
+                            -- NO cumple: rechazar y saltar a IR7
+                            objeto_rechazado <= '1';
+                            estado_sensado <= AVANZANDO_A_IR7;
+                        end if;
+                        
+                    when AVANZANDO_A_IR3 =>
+                        -- Motor activo, avanzando hacia IR3
+                        motor_activo <= '1';
+                        if sensor_ir3_detectado = '1' then
+                            motor_activo <= '0';  -- Parar motor en IR3
+                            estado_sensado <= PAUSA_COLOR;
+                            contador_espera <= 0;
+                        end if;
+                        
+                    when PAUSA_COLOR =>
+                        -- Al llegar a IR3, esperar 2 segundos antes de sensar color
+                        -- Esto permite que el objeto se estabilice y la cámara capture mejor
+                        motor_activo <= '0';
+                        if contador_espera >= TIEMPO_ESPERA_2S then  -- 2 segundos
+                            estado_sensado <= ESPERANDO_COLOR;
+                            contador_espera <= 0;
+                        else
+                            contador_espera <= contador_espera + 1;
+                        end if;
+                        
+                    when ESPERANDO_COLOR =>
+                        -- Esperando recibir color por serial (sin timeout)
+                        motor_activo <= '0';
+                        if color_recibido = '1' then
+                            -- Ya recibimos el color, ahora verificar
+                            estado_sensado <= VERIFICANDO_COLOR;
+                        end if;
+                        
+                    when VERIFICANDO_COLOR =>
+                        -- Verificar si cumple condición de color del usuario
+                        motor_activo <= '0';
+                        if (color_selec = 1 and color_detectado = "01") or 
+                           (color_selec = 2 and color_detectado = "10") or 
+                           (color_selec = 3 and color_detectado = "11") then
+                            -- Cumple: continuar normalmente
+                            estado_sensado <= AVANZANDO_A_IR4;
+                        else
+                            -- NO cumple: rechazar y saltar a IR7
+                            objeto_rechazado <= '1';
+                            estado_sensado <= AVANZANDO_A_IR7;
+                        end if;
+                        
+                    when AVANZANDO_A_IR4 =>
+                        -- Motor activo, avanzando hacia IR4
+                        motor_activo <= '1';
+                        if sensor_ir4_detectado = '1' then
+                            motor_activo <= '0';  -- Parar motor en IR4
+                            estado_sensado <= PAUSA_METALICO;
+                            contador_espera <= 0;
+                        end if;
+                        
+                    when PAUSA_METALICO =>
+                        -- Pausa de 2 segundos para sensado metálico
+                        motor_activo <= '0';
+                        if contador_espera >= TIEMPO_ESPERA_2S then
+                            estado_sensado <= LEYENDO_METALICO;
+                        else
+                            contador_espera <= contador_espera + 1;
+                        end if;
+                        
+                    when LEYENDO_METALICO =>
+                        -- Leer sensor metálico (1 = metálico, 0 = no metálico)
+                        motor_activo <= '0';
+                        lectura_metalico <= METALIC_IN;
+                        estado_sensado <= VERIFICANDO_METALICO;
+                        
+                    when VERIFICANDO_METALICO =>
+                        -- Verificar si cumple condición metálica del usuario
+                        motor_activo <= '0';
+                        if (metal_selec = 1 and lectura_metalico = '1') or 
+                           (metal_selec = 2 and lectura_metalico = '0') then
+                            -- Cumple: continuar normalmente
+                            estado_sensado <= AVANZANDO_A_IR5;
+                        else
+                            -- NO cumple: rechazar y saltar a IR7
+                            objeto_rechazado <= '1';
+                            estado_sensado <= AVANZANDO_A_IR7;
+                        end if;
+                        
+                    when AVANZANDO_A_IR5 =>
+                        -- Motor activo, avanzando hacia IR5 (punto de sensado altura)
+                        motor_activo <= '1';
+                        if sensor_ir5_detectado = '1' then
+                            motor_activo <= '0';  -- Parar motor en IR5
+                            estado_sensado <= PAUSA_ALTURA;
+                            contador_espera <= 0;
+                        end if;
+                        
+                    when PAUSA_ALTURA =>
+                        -- Pausa de 2 segundos para sensado de altura
+                        motor_activo <= '0';
+                        if contador_espera >= TIEMPO_ESPERA_2S then
+                            estado_sensado <= LEYENDO_ALTURA;
+                        else
+                            contador_espera <= contador_espera + 1;
+                        end if;
+                        
+                    when LEYENDO_ALTURA =>
+                        -- Leer sensores de altura y determinar tamaño
+                        -- Chico: solo HEIGHT1, Mediano: HEIGHT1+HEIGHT2, Grande: HEIGHT1+HEIGHT2+HEIGHT3
+                        motor_activo <= '0';
+                        if sensor_height1_detectado = '1' and sensor_height2_detectado = '1' and sensor_height3_detectado = '1' then
+                            lectura_altura <= "11";  -- Grande
+                        elsif sensor_height1_detectado = '1' and sensor_height2_detectado = '1' then
+                            lectura_altura <= "10";  -- Mediano
+                        elsif sensor_height1_detectado = '1' then
+                            lectura_altura <= "01";  -- Chico
+                        else
+                            lectura_altura <= "00";  -- Sin detectar (error)
+                        end if;
+                        estado_sensado <= VERIFICANDO_ALTURA;
+                        
+                    when VERIFICANDO_ALTURA =>
+                        -- Verificar si cumple condición de altura del usuario
+                        motor_activo <= '0';
+                        if (altura_selec = 1 and lectura_altura = "01") or 
+                           (altura_selec = 2 and lectura_altura = "10") or 
+                           (altura_selec = 3 and lectura_altura = "11") then
+                            -- Cumple TODAS las condiciones: ACEPTADO
+                            objeto_rechazado <= '0';
+                            estado_sensado <= ESPERA_POST_ALTURA;
+                            contador_espera <= 0;
+                        else
+                            -- NO cumple: rechazar
+                            objeto_rechazado <= '1';
+                            estado_sensado <= ESPERA_POST_ALTURA;
+                            contador_espera <= 0;
+                        end if;
+                        
+                    when ESPERA_POST_ALTURA =>
+                        -- Espera de 1 segundo después de verificar altura
+                        -- Permite que el servo se mueva antes de avanzar
+                        motor_activo <= '0';
+                        if contador_espera >= TIEMPO_ESPERA_1S then
+                            -- Decidir hacia dónde ir según aceptación/rechazo
+                            if objeto_rechazado = '1' then
+                                estado_sensado <= AVANZANDO_A_IR7;
+                            else
+                                estado_sensado <= AVANZANDO_A_IR6;
+                            end if;
+                        else
+                            contador_espera <= contador_espera + 1;
+                        end if;
+                        
+                    when AVANZANDO_A_IR6 =>
+                        -- Motor activo, avanzando hacia IR6 (punto final)
+                        motor_activo <= '1';
+                        if sensor_ir6_detectado = '1' then
+                            motor_activo <= '0';  -- Parar motor en IR6
+                            estado_sensado <= PARADO_IR6;
+                        end if;
+                        
+                    when PARADO_IR6 =>
+                        -- Final del ciclo para objetos aceptados
+                        motor_activo <= '0';
+                        if SW_START = '1' then
+                            -- MODO CONTINUO: Esperar que el sensor se libere antes de volver a IDLE
+                            if sensor_ir6_detectado = '0' then
+                                -- Sensor liberado, incrementar y volver a IDLE
+                                inc_aceptados <= '1';
+                                estado_sensado <= IDLE;
+                            else
+                                -- Sensor aún detectando, mantener pulso bajo
+                                inc_aceptados <= '0';
+                            end if;
+                        else
+                            -- MODO PAUSADO: Esperar remoción del objeto
+                            if sensor_ir6_detectado = '0' then
+                                -- Objeto removido, incrementar contador de aceptados
+                                inc_aceptados <= '1';
+                                estado_sensado <= IDLE;
+                            else
+                                inc_aceptados <= '0';
+                            end if;
+                        end if;
+                        
+                    when AVANZANDO_A_IR7 =>
+                        -- Motor activo, avanzando hacia IR7 (objeto rechazado)
+                        motor_activo <= '1';
+                        if sensor_ir7_detectado = '1' then
+                            motor_activo <= '0';
+                            estado_sensado <= PARADO_IR7;
+                        end if;
+                        
+                    when PARADO_IR7 =>
+                        -- Final del ciclo para objetos rechazados
+                        motor_activo <= '0';
+                        if SW_START = '1' then
+                            -- MODO CONTINUO: Esperar que el sensor se libere antes de volver a IDLE
+                            if sensor_ir7_detectado = '0' then
+                                -- Sensor liberado, incrementar y volver a IDLE
+                                inc_rechazados <= '1';
+                                estado_sensado <= IDLE;
+                            else
+                                -- Sensor aún detectando, mantener pulso bajo
+                                inc_rechazados <= '0';
+                            end if;
+                        else
+                            -- MODO PAUSADO: Esperar remoción del objeto
+                            if sensor_ir7_detectado = '0' then
+                                -- Objeto removido, incrementar contador de rechazados
+                                inc_rechazados <= '1';
+                                estado_sensado <= IDLE;
+                            else
+                                inc_rechazados <= '0';
+                            end if;
+                        end if;
+
+                        
+                    when others =>
+                        estado_sensado <= IDLE;
+                        motor_activo <= '0';
+                end case;
+            else
+                -- Si no estamos en resumen, reiniciar máquina de estados
+                estado_sensado <= IDLE;
+                motor_activo <= '0';
+                contador_espera <= 0;
+                -- color_detectado y color_recibido se manejan en otro proceso
+            end if;
+        end if;
+    end process;
+    
+    -- PROCESO DE SINCRONIZACIÓN DEL BOTÓN RESET Y SW_RESET
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            -- Sincronizar botón para evitar metaestabilidad
+            btn_reset_prev <= BTN_RESET;
+            btn_reset_sync <= btn_reset_prev;
+            
+            -- Combinar reset de botón y switch
+            -- SW_RESET solo resetea contadores cuando está en estado_menu = 5
+            if (btn_reset_sync = '1') or (SW_RESET = '1' and estado_menu = 5) then
+                reset_contadores <= '1';
+            else
+                reset_contadores <= '0';
+            end if;
+        end if;
+    end process;
+    
+    -- PROCESO DE RECEPCIÓN UART (9600 baud)
+    -- Recibe el código de color desde la cámara
+    -- "01" = Blanco (ASCII '0' y '1'), "10" = Negro, "11" = Rojo
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            -- Sincronización de entrada RX
+            uart_rx_sync <= UART_RX;
+            uart_rx_sync2 <= uart_rx_sync;
+            
+            rx_done <= '0';
+            
+            case rx_state is
+                when RX_IDLE =>
+                    rx_clk_count <= 0;
+                    rx_bit_index <= 0;
+                    if uart_rx_sync2 = '0' then  -- Start bit detectado
+                        rx_state <= RX_START;
+                    end if;
+                    
+                when RX_START =>
+                    -- Esperar medio bit para muestrear en el centro
+                    if rx_clk_count = (CLKS_PER_BIT - 1) / 2 then
+                        if uart_rx_sync2 = '0' then
+                            rx_clk_count <= 0;
+                            rx_state <= RX_DATA;
+                        else
+                            rx_state <= RX_IDLE;
+                        end if;
+                    else
+                        rx_clk_count <= rx_clk_count + 1;
+                    end if;
+                    
+                when RX_DATA =>
+                    if rx_clk_count = CLKS_PER_BIT - 1 then
+                        rx_clk_count <= 0;
+                        rx_byte(rx_bit_index) <= uart_rx_sync2;
+                        if rx_bit_index = 7 then
+                            rx_bit_index <= 0;
+                            rx_state <= RX_STOP;
+                        else
+                            rx_bit_index <= rx_bit_index + 1;
+                        end if;
+                    else
+                        rx_clk_count <= rx_clk_count + 1;
+                    end if;
+                    
+                when RX_STOP =>
+                    if rx_clk_count = CLKS_PER_BIT - 1 then
+                        rx_done <= '1';
+                        rx_clk_count <= 0;
+                        rx_state <= RX_IDLE;
+                    else
+                        rx_clk_count <= rx_clk_count + 1;
+                    end if;
+            end case;
+        end if;
+    end process;
+    
+    -- Proceso para interpretar color recibido
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            if rx_done = '1' then
+                -- Interpretar el byte recibido como código de color
+                -- Se esperan caracteres ASCII: '0' = 0x30, '1' = 0x31
+                if rx_byte = x"30" or rx_byte = x"31" then  -- '0' o '1'
+                    if estado_sensado = ESPERANDO_COLOR or estado_sensado = PAUSA_COLOR then
+                        -- Primer bit del color
+                        color_detectado(1) <= rx_byte(0);
+                    end if;
+                elsif rx_byte = x"01" then  -- Código directo "01" = Blanco
+                    color_detectado <= "01";
+                    color_recibido <= '1';
+                elsif rx_byte = x"02" or rx_byte = x"10" then  -- Código "10" = Negro
+                    color_detectado <= "10";
+                    color_recibido <= '1';
+                elsif rx_byte = x"03" or rx_byte = x"11" then  -- Código "11" = Rojo
+                    color_detectado <= "11";
+                    color_recibido <= '1';
+                end if;
+            end if;
+            
+            -- Reset cuando volvemos a IDLE
+            if estado_sensado = IDLE then
+                color_recibido <= '0';
+                color_detectado <= "00";
+            end if;
+        end if;
+    end process;
+    
+    -- PROCESO DE TRANSMISIÓN UART (9600 baud)
+    -- Envía información de resultados
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            tx_done <= '0';
+            
+            case tx_state is
+                when TX_IDLE =>
+                    tx_out <= '1';
+                    tx_clk_count <= 0;
+                    tx_bit_index <= 0;
+                    if tx_send_start = '1' then
+                        tx_state <= TX_START;
+                    end if;
+                    
+                when TX_START =>
+                    tx_out <= '0';  -- Start bit
+                    if tx_clk_count = CLKS_PER_BIT - 1 then
+                        tx_clk_count <= 0;
+                        tx_state <= TX_DATA;
+                    else
+                        tx_clk_count <= tx_clk_count + 1;
+                    end if;
+                    
+                when TX_DATA =>
+                    tx_out <= tx_byte(tx_bit_index);
+                    if tx_clk_count = CLKS_PER_BIT - 1 then
+                        tx_clk_count <= 0;
+                        if tx_bit_index = 7 then
+                            tx_bit_index <= 0;
+                            tx_state <= TX_STOP;
+                        else
+                            tx_bit_index <= tx_bit_index + 1;
+                        end if;
+                    else
+                        tx_clk_count <= tx_clk_count + 1;
+                    end if;
+                    
+                when TX_STOP =>
+                    tx_out <= '1';  -- Stop bit
+                    if tx_clk_count = CLKS_PER_BIT - 1 then
+                        tx_done <= '1';
+                        tx_clk_count <= 0;
+                        tx_state <= TX_IDLE;
+                    else
+                        tx_clk_count <= tx_clk_count + 1;
+                    end if;
+            end case;
+        end if;
+    end process;
+    
+    -- PROCESO PARA ENVIAR DATOS POR UART
+    -- 1. Cuando llega a PAUSA_COLOR, envía 'R' (Ready) a ColorNN
+    -- 2. Cuando llega a PARADO_IR6 o PARADO_IR7, envía resultados: 'M'/'N' + 'T'/'X' + color + altura + estado + '\n'
+    --    Formato: [Magnético][Metálico][Color][Altura][Estado]\n
+    --    Magnético: 'M' = Sí magnético, 'N' = No magnético
+    --    Metálico:  'T' = Sí metálico, 'X' = No metálico
+    --    Color:     '1' = Blanco, '2' = Negro, '3' = Rojo
+    --    Altura:    'C' = Chico, 'M' = Mediano, 'G' = Grande
+    --    Estado:    'A' = Aceptado, 'R' = Rechazado
+    process(CLK)
+        variable tx_secuencia : INTEGER range 0 to 11 := 0;
+        variable tx_delay : INTEGER := 0;
+        variable resultado_enviado : STD_LOGIC := '0';
+        variable ready_enviado : STD_LOGIC := '0';
+    begin
+        if rising_edge(CLK) then
+            -- Enviar 'R' cuando llegamos a PAUSA_COLOR
+            if estado_sensado = PAUSA_COLOR and ready_enviado = '0' then
+                if tx_state = TX_IDLE then
+                    tx_byte <= x"52";  -- 'R' = Ready, listo para recibir color
+                    tx_send_start <= '1';
+                    ready_enviado := '1';
+                else
+                    tx_send_start <= '0';
+                end if;
+            -- Enviar resultados cuando llegamos a PARADO_IR6 o PARADO_IR7
+            elsif (estado_sensado = PARADO_IR6 or estado_sensado = PARADO_IR7) and resultado_enviado = '0' then
+                -- Enviar secuencia de resultados
+                if tx_state = TX_IDLE and tx_delay = 0 then
+                    case tx_secuencia is
+                        when 0 =>
+                            -- Enviar 'M' o 'N' según magnético
+                            if lectura_magnetico = '0' then
+                                tx_byte <= x"4D";  -- 'M' = Magnético
+                            else
+                                tx_byte <= x"4E";  -- 'N' = No magnético
+                            end if;
+                            tx_send_start <= '1';
+                            tx_secuencia := 1;
+                            
+                        when 1 =>
+                            tx_send_start <= '0';
+                            tx_delay := CLKS_PER_BIT * 12;  -- Esperar fin de transmisión
+                            tx_secuencia := 2;
+                            
+                        when 2 =>
+                            -- Enviar 'T' o 'X' según metálico
+                            if lectura_metalico = '1' then
+                                tx_byte <= x"54";  -- 'T' = Metálico (True)
+                            else
+                                tx_byte <= x"58";  -- 'X' = No metálico
+                            end if;
+                            tx_send_start <= '1';
+                            tx_secuencia := 3;
+                            
+                        when 3 =>
+                            tx_send_start <= '0';
+                            tx_delay := CLKS_PER_BIT * 12;
+                            tx_secuencia := 4;
+                            
+                        when 4 =>
+                            -- Enviar código de color
+                            case color_detectado is
+                                when "01" => tx_byte <= x"31";  -- '1' = Blanco
+                                when "10" => tx_byte <= x"32";  -- '2' = Negro
+                                when "11" => tx_byte <= x"33";  -- '3' = Rojo
+                                when others => tx_byte <= x"30"; -- '0' = Sin color
+                            end case;
+                            tx_send_start <= '1';
+                            tx_secuencia := 5;
+                            
+                        when 5 =>
+                            tx_send_start <= '0';
+                            tx_delay := CLKS_PER_BIT * 12;
+                            tx_secuencia := 6;
+                            
+                        when 6 =>
+                            -- Enviar código de altura
+                            case lectura_altura is
+                                when "01" => tx_byte <= x"43";  -- 'C' = Chico
+                                when "10" => tx_byte <= x"4D";  -- 'M' = Mediano
+                                when "11" => tx_byte <= x"47";  -- 'G' = Grande
+                                when others => tx_byte <= x"30"; -- '0' = Sin detectar
+                            end case;
+                            tx_send_start <= '1';
+                            tx_secuencia := 7;
+                            
+                        when 7 =>
+                            tx_send_start <= '0';
+                            tx_delay := CLKS_PER_BIT * 12;
+                            tx_secuencia := 8;
+                            
+                        when 8 =>
+                            -- Enviar estado de aceptación/rechazo
+                            if objeto_rechazado = '1' then
+                                tx_byte <= x"52";  -- 'R' = Rechazado
+                            else
+                                tx_byte <= x"41";  -- 'A' = Aceptado
+                            end if;
+                            tx_send_start <= '1';
+                            tx_secuencia := 9;
+                            
+                        when 9 =>
+                            tx_send_start <= '0';
+                            tx_delay := CLKS_PER_BIT * 12;
+                            tx_secuencia := 10;
+                            
+                        when 10 =>
+                            -- Enviar salto de línea
+                            tx_byte <= x"0A";  -- '\n'
+                            tx_send_start <= '1';
+                            tx_secuencia := 11;
+                            
+                        when 11 =>
+                            tx_send_start <= '0';
+                            resultado_enviado := '1';
+                            
+                        when others =>
+                            tx_send_start <= '0';
+                    end case;
+                elsif tx_delay > 0 then
+                    tx_delay := tx_delay - 1;
+                    tx_send_start <= '0';
+                else
+                    tx_send_start <= '0';
+                end if;
+            elsif estado_sensado = IDLE then
+                -- Reset cuando volvemos al inicio
+                tx_secuencia := 0;
+                tx_delay := 0;
+                resultado_enviado := '0';
+                ready_enviado := '0';
+                tx_send_start <= '0';
+            else
+                tx_send_start <= '0';
+            end if;
+        end if;
+    end process;
+
+
+    -- LCD - 4 LÍNEAS CON SINCRONIZACIÓN PARA EVITAR CORRUPCIÓN
+    process(CLK)
+    begin
+        if rising_edge(CLK) then
+            -- Detectar cambio de estado del menú
+            estado_menu_prev <= estado_menu;
+            
+            -- Activar flag de actualización cuando cambia el menú
+            if estado_menu /= estado_menu_prev then
+                lcd_actualizar <= '1';
+            else
+                lcd_actualizar <= '0';
+            end if;
+            
+            -- Solo actualizar instrucciones LCD cuando hay cambio de menú o al inicio
+            if lcd_actualizar = '1' or estado_menu_prev = 0 then
+                INST(0)  <= LCD_INI("00");
+                INST(1)  <= BUCLE_INI(1);
+                -- SIN LIMPIAR_PANTALLA - directo a POS(1,1) como en checkpoint
+                INST(2)  <= POS(1,1);
+            
+                case estado_menu is
+                -- MENÚ PRINCIPAL
+                when 0 =>
+                    -- L1: "Elija una opcion"
+                    INST(3)  <= CHAR(Me);  INST(4)  <= CHAR(l);  INST(5)  <= CHAR(i);
+                    INST(6)  <= CHAR(j);   INST(7)  <= CHAR(a);  INST(8)  <= CHAR_ASCII(x"20");
+                    INST(9)  <= CHAR(u);   INST(10) <= CHAR(n);  INST(11) <= CHAR(a);
+                    INST(12) <= CHAR_ASCII(x"20");
+                    INST(13) <= CHAR(o);   INST(14) <= CHAR(p);  INST(15) <= CHAR(c);
+                    INST(16) <= CHAR(i);   INST(17) <= CHAR(o);  INST(18) <= CHAR(n);
+                    INST(19) <= CHAR_ASCII(x"20");
+                    
+                    --L2
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR_ASCII(x"20"); INST(22) <= CHAR_ASCII(x"20");
+                    INST(23) <= CHAR_ASCII(x"20"); INST(24) <= CHAR_ASCII(x"20");  INST(25) <= CHAR_ASCII(x"20");
+                    INST(26) <= CHAR_ASCII(x"20"); INST(27) <= CHAR_ASCII(x"20");  INST(28) <= CHAR_ASCII(x"20");
+                    INST(29) <= CHAR_ASCII(x"20"); INST(30) <= CHAR_ASCII(x"20");
+                    INST(31) <= CHAR_ASCII(x"20"); INST(32) <= CHAR_ASCII(x"20");  INST(33) <=CHAR_ASCII(x"20");
+                    INST(34) <= CHAR_ASCII(x"20"); INST(35) <= CHAR_ASCII(x"20");  INST(36) <= CHAR_ASCII(x"20");
+                    
+                    -- L3: 
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR_ASCII(x"20"); INST(39) <= CHAR_ASCII(x"20");
+                    INST(40) <= CHAR_ASCII(x"20"); INST(41) <= CHAR_ASCII(x"20");  INST(42) <= CHAR_ASCII(x"20");
+                    INST(43) <= CHAR_ASCII(x"20"); INST(44) <= CHAR_ASCII(x"20");  INST(45) <= CHAR_ASCII(x"20");
+                    INST(46) <= CHAR_ASCII(x"20"); INST(47) <= CHAR_ASCII(x"20");  INST(48) <=CHAR_ASCII(x"20");
+                    INST(49) <= CHAR_ASCII(x"20"); INST(50) <= CHAR_ASCII(x"20");
+                    INST(51) <= CHAR_ASCII(x"20"); INST(52) <= CHAR_ASCII(x"20");
+                    INST(53) <= CHAR_ASCII(x"20"); INST(54) <= CHAR_ASCII(x"20");
+                    INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: "Enter p/aceptar "
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(Me);  INST(58) <= CHAR(n);  INST(59) <= CHAR(t);
+                    INST(60) <= CHAR(e);   INST(61) <= CHAR(r);  INST(62) <= CHAR_ASCII(x"20");
+                    INST(63) <= CHAR(p);   INST(64) <= CHAR_ASCII(x"2F");
+                    INST(65) <= CHAR(a);   INST(66) <= CHAR(c);  INST(67) <= CHAR(e);
+                    INST(68) <= CHAR(p);   INST(69) <= CHAR(t);  INST(70) <= CHAR(a);
+                    INST(71) <= CHAR(r);   INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                
+                -- SUBMENÚ COLOR
+                when 1 =>
+                    -- L1: "Elija un color  "
+                    INST(3)  <= CHAR(Me);  INST(4)  <= CHAR(l);  INST(5)  <= CHAR(i);
+                    INST(6)  <= CHAR(j);   INST(7)  <= CHAR(a);  INST(8)  <= CHAR_ASCII(x"20");
+                    INST(9)  <= CHAR(u);   INST(10) <= CHAR(n);  INST(11) <= CHAR_ASCII(x"20");
+                    INST(12) <= CHAR(c);   INST(13) <= CHAR(o);  INST(14) <= CHAR(l);
+                    INST(15) <= CHAR(o);   INST(16) <= CHAR(r);  INST(17) <= CHAR_ASCII(x"20");
+                    INST(18) <= CHAR_ASCII(x"20"); INST(19) <= CHAR_ASCII(x"20");
+                    
+                    -- L2: "1)Blanco 2)Negro"
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR_ASCII(x"31"); INST(22) <= CHAR_ASCII(x"29");
+                    INST(23) <= CHAR(Mb);  INST(24) <= CHAR(l);  INST(25) <= CHAR(a);
+                    INST(26) <= CHAR(n);   INST(27) <= CHAR(c);  INST(28) <= CHAR(o);
+                    INST(29) <= CHAR_ASCII(x"20");
+                    INST(30) <= CHAR_ASCII(x"32"); INST(31) <= CHAR_ASCII(x"29");
+                    INST(32) <= CHAR(Mn);  INST(33) <= CHAR(e);  INST(34) <= CHAR(g);
+                    INST(35) <= CHAR(r);   INST(36) <= CHAR(o);
+                    
+                    -- L3: "3)Rojo          "
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR_ASCII(x"33"); INST(39) <= CHAR_ASCII(x"29");
+                    INST(40) <= CHAR(Mr);  INST(41) <= CHAR(o);  INST(42) <= CHAR(j);
+                    INST(43) <= CHAR(o);   INST(44) <= CHAR_ASCII(x"20");
+                    INST(45) <= CHAR_ASCII(x"20"); INST(46) <= CHAR_ASCII(x"20");
+                    INST(47) <= CHAR_ASCII(x"20"); INST(48) <= CHAR_ASCII(x"20");
+                    INST(49) <= CHAR_ASCII(x"20"); INST(50) <= CHAR_ASCII(x"20");
+                    INST(51) <= CHAR_ASCII(x"20"); INST(52) <= CHAR_ASCII(x"20");
+                    INST(53) <= CHAR_ASCII(x"20"); INST(54) <= CHAR_ASCII(x"20");
+                    INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: "Enter p/aceptar "
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(Me);  INST(58) <= CHAR(n);  INST(59) <= CHAR(t);
+                    INST(60) <= CHAR(e);   INST(61) <= CHAR(r);  INST(62) <= CHAR_ASCII(x"20");
+                    INST(63) <= CHAR(p);   INST(64) <= CHAR_ASCII(x"2F");
+                    INST(65) <= CHAR(a);   INST(66) <= CHAR(c);  INST(67) <= CHAR(e);
+                    INST(68) <= CHAR(p);   INST(69) <= CHAR(t);  INST(70) <= CHAR(a);
+                    INST(71) <= CHAR(r);   INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                
+                -- SUBMENÚ ALTURA
+                when 2 =>
+                    -- L1: "Elija un tamano "
+                    INST(3)  <= CHAR(Me);  INST(4)  <= CHAR(l);  INST(5)  <= CHAR(i);
+                    INST(6)  <= CHAR(j);   INST(7)  <= CHAR(a);  INST(8)  <= CHAR_ASCII(x"20");
+                    INST(9)  <= CHAR(u);   INST(10) <= CHAR(n);  INST(11) <= CHAR_ASCII(x"20");
+                    INST(12) <= CHAR(t);   INST(13) <= CHAR(a);  INST(14) <= CHAR(m);
+                    INST(15) <= CHAR(a);   INST(16) <= CHAR(n);  INST(17) <= CHAR(o);
+                    INST(18) <= CHAR_ASCII(x"20"); INST(19) <= CHAR_ASCII(x"20");
+                    
+                    -- L2: "1)Baja 2)Media  "
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR_ASCII(x"31"); INST(22) <= CHAR_ASCII(x"29");
+                    INST(23) <= CHAR(Mb);  INST(24) <= CHAR(a);  INST(25) <= CHAR(j);
+                    INST(26) <= CHAR(a);   INST(27) <= CHAR_ASCII(x"20");
+                    INST(28) <= CHAR_ASCII(x"32"); INST(29) <= CHAR_ASCII(x"29");
+                    INST(30) <= CHAR(Mm);  INST(31) <= CHAR(e);  INST(32) <= CHAR(d);
+                    INST(33) <= CHAR(i);   INST(34) <= CHAR(a);
+                    INST(35) <= CHAR_ASCII(x"20"); INST(36) <= CHAR_ASCII(x"20");
+                    
+                    -- L3: "3)Alta          "
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR_ASCII(x"33"); INST(39) <= CHAR_ASCII(x"29");
+                    INST(40) <= CHAR(Ma);  INST(41) <= CHAR(l);  INST(42) <= CHAR(t);
+                    INST(43) <= CHAR(a);   INST(44) <= CHAR_ASCII(x"20");
+                    INST(45) <= CHAR_ASCII(x"20"); INST(46) <= CHAR_ASCII(x"20");
+                    INST(47) <= CHAR_ASCII(x"20"); INST(48) <= CHAR_ASCII(x"20");
+                    INST(49) <= CHAR_ASCII(x"20"); INST(50) <= CHAR_ASCII(x"20");
+                    INST(51) <= CHAR_ASCII(x"20"); INST(52) <= CHAR_ASCII(x"20");
+                    INST(53) <= CHAR_ASCII(x"20"); INST(54) <= CHAR_ASCII(x"20");
+                    INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: "Enter p/aceptar "
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(Me);  INST(58) <= CHAR(n);  INST(59) <= CHAR(t);
+                    INST(60) <= CHAR(e);   INST(61) <= CHAR(r);  INST(62) <= CHAR_ASCII(x"20");
+                    INST(63) <= CHAR(p);   INST(64) <= CHAR_ASCII(x"2F");
+                    INST(65) <= CHAR(a);   INST(66) <= CHAR(c);  INST(67) <= CHAR(e);
+                    INST(68) <= CHAR(p);   INST(69) <= CHAR(t);  INST(70) <= CHAR(a);
+                    INST(71) <= CHAR(r);   INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                
+                -- SUBMENÚ MAGNÉTICO
+                when 3 =>
+                    -- L1: "Magnetico?      "
+                    INST(3)  <= CHAR(Mm);  INST(4)  <= CHAR(a);  INST(5)  <= CHAR(g);
+                    INST(6)  <= CHAR(n);   INST(7)  <= CHAR(e);  INST(8)  <= CHAR(t);
+                    INST(9)  <= CHAR(i);   INST(10) <= CHAR(c);  INST(11) <= CHAR(o);
+                    INST(12) <= CHAR_ASCII(x"3F");
+                    INST(13) <= CHAR_ASCII(x"20"); INST(14) <= CHAR_ASCII(x"20");
+                    INST(15) <= CHAR_ASCII(x"20"); INST(16) <= CHAR_ASCII(x"20");
+                    INST(17) <= CHAR_ASCII(x"20"); INST(18) <= CHAR_ASCII(x"20");
+                    INST(19) <= CHAR_ASCII(x"20");
+                    
+                    -- L2: "1)Si 2)No       "
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR_ASCII(x"31"); INST(22) <= CHAR_ASCII(x"29");
+                    INST(23) <= CHAR(MAs); INST(24) <= CHAR(i);  INST(25) <= CHAR_ASCII(x"20");
+                    INST(26) <= CHAR_ASCII(x"32"); INST(27) <= CHAR_ASCII(x"29");
+                    INST(28) <= CHAR(Mn);  INST(29) <= CHAR(o);
+                    INST(30) <= CHAR_ASCII(x"20"); INST(31) <= CHAR_ASCII(x"20");
+                    INST(32) <= CHAR_ASCII(x"20"); INST(33) <= CHAR_ASCII(x"20");
+                    INST(34) <= CHAR_ASCII(x"20"); INST(35) <= CHAR_ASCII(x"20");
+                    INST(36) <= CHAR_ASCII(x"20");
+                    
+                    -- L3: "                "
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR_ASCII(x"20"); INST(39) <= CHAR_ASCII(x"20");
+                    INST(40) <= CHAR_ASCII(x"20"); INST(41) <= CHAR_ASCII(x"20");
+                    INST(42) <= CHAR_ASCII(x"20"); INST(43) <= CHAR_ASCII(x"20");
+                    INST(44) <= CHAR_ASCII(x"20"); INST(45) <= CHAR_ASCII(x"20");
+                    INST(46) <= CHAR_ASCII(x"20"); INST(47) <= CHAR_ASCII(x"20");
+                    INST(48) <= CHAR_ASCII(x"20"); INST(49) <= CHAR_ASCII(x"20");
+                    INST(50) <= CHAR_ASCII(x"20"); INST(51) <= CHAR_ASCII(x"20");
+                    INST(52) <= CHAR_ASCII(x"20"); INST(53) <= CHAR_ASCII(x"20");
+                    INST(54) <= CHAR_ASCII(x"20"); INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: "Enter p/aceptar "
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(Me);  INST(58) <= CHAR(n);  INST(59) <= CHAR(t);
+                    INST(60) <= CHAR(e);   INST(61) <= CHAR(r);  INST(62) <= CHAR_ASCII(x"20");
+                    INST(63) <= CHAR(p);   INST(64) <= CHAR_ASCII(x"2F");
+                    INST(65) <= CHAR(a);   INST(66) <= CHAR(c);  INST(67) <= CHAR(e);
+                    INST(68) <= CHAR(p);   INST(69) <= CHAR(t);  INST(70) <= CHAR(a);
+                    INST(71) <= CHAR(r);   INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                
+                -- SUBMENÚ METAL
+                when 4 =>
+                    -- L1: "Metal?          "
+                    INST(3)  <= CHAR(Mm);  INST(4)  <= CHAR(e);  INST(5)  <= CHAR(t);
+                    INST(6)  <= CHAR(a);   INST(7)  <= CHAR(l);  INST(8)  <= CHAR_ASCII(x"3F");
+                    INST(9)  <= CHAR_ASCII(x"20"); INST(10) <= CHAR_ASCII(x"20");
+                    INST(11) <= CHAR_ASCII(x"20"); INST(12) <= CHAR_ASCII(x"20");
+                    INST(13) <= CHAR_ASCII(x"20"); INST(14) <= CHAR_ASCII(x"20");
+                    INST(15) <= CHAR_ASCII(x"20"); INST(16) <= CHAR_ASCII(x"20");
+                    INST(17) <= CHAR_ASCII(x"20"); INST(18) <= CHAR_ASCII(x"20");
+                    INST(19) <= CHAR_ASCII(x"20");
+                    
+                    -- L2: "1)Si 2)No       "
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR_ASCII(x"31"); INST(22) <= CHAR_ASCII(x"29");
+                    INST(23) <= CHAR(MAs); INST(24) <= CHAR(i);  INST(25) <= CHAR_ASCII(x"20");
+                    INST(26) <= CHAR_ASCII(x"32"); INST(27) <= CHAR_ASCII(x"29");
+                    INST(28) <= CHAR(Mn);  INST(29) <= CHAR(o);
+                    INST(30) <= CHAR_ASCII(x"20"); INST(31) <= CHAR_ASCII(x"20");
+                    INST(32) <= CHAR_ASCII(x"20"); INST(33) <= CHAR_ASCII(x"20");
+                    INST(34) <= CHAR_ASCII(x"20"); INST(35) <= CHAR_ASCII(x"20");
+                    INST(36) <= CHAR_ASCII(x"20");
+                    
+                    -- L3: "                "
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR_ASCII(x"20"); INST(39) <= CHAR_ASCII(x"20");
+                    INST(40) <= CHAR_ASCII(x"20"); INST(41) <= CHAR_ASCII(x"20");
+                    INST(42) <= CHAR_ASCII(x"20"); INST(43) <= CHAR_ASCII(x"20");
+                    INST(44) <= CHAR_ASCII(x"20"); INST(45) <= CHAR_ASCII(x"20");
+                    INST(46) <= CHAR_ASCII(x"20"); INST(47) <= CHAR_ASCII(x"20");
+                    INST(48) <= CHAR_ASCII(x"20"); INST(49) <= CHAR_ASCII(x"20");
+                    INST(50) <= CHAR_ASCII(x"20"); INST(51) <= CHAR_ASCII(x"20");
+                    INST(52) <= CHAR_ASCII(x"20"); INST(53) <= CHAR_ASCII(x"20");
+                    INST(54) <= CHAR_ASCII(x"20"); INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: "Enter p/aceptar "
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(Me);  INST(58) <= CHAR(n);  INST(59) <= CHAR(t);
+                    INST(60) <= CHAR(e);   INST(61) <= CHAR(r);  INST(62) <= CHAR_ASCII(x"20");
+                    INST(63) <= CHAR(p);   INST(64) <= CHAR_ASCII(x"2F");
+                    INST(65) <= CHAR(a);   INST(66) <= CHAR(c);  INST(67) <= CHAR(e);
+                    INST(68) <= CHAR(p);   INST(69) <= CHAR(t);  INST(70) <= CHAR(a);
+                    INST(71) <= CHAR(r);   INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                
+                -- PANTALLA RESUMEN
+                when 5 =>
+                    -- L1: Color + Altura (abreviados)
+                    -- Formato: "Col:XXX Tam:XXX "
+                    INST(3)  <= CHAR(Mc);  INST(4)  <= CHAR(o);  INST(5)  <= CHAR(l);
+                    INST(6)  <= CHAR_ASCII(x"3A");  -- ':'
+                    case color_selec is
+                        when 1 => -- Blanco -> Bla
+                            INST(7)  <= CHAR(Mb); INST(8)  <= CHAR(l); INST(9)  <= CHAR(a);
+                        when 2 => -- Negro -> Neg
+                            INST(7)  <= CHAR(Mn); INST(8)  <= CHAR(e); INST(9)  <= CHAR(g);
+                        when 3 => -- Rojo -> Roj
+                            INST(7)  <= CHAR(Mr); INST(8)  <= CHAR(o); INST(9)  <= CHAR(j);
+                        when others =>
+                            INST(7)  <= CHAR_ASCII(x"2D"); INST(8)  <= CHAR_ASCII(x"2D"); INST(9)  <= CHAR_ASCII(x"2D");
+                    end case;
+                    INST(10) <= CHAR_ASCII(x"20");
+                    INST(11) <= CHAR(Mt);  INST(12) <= CHAR(a);  INST(13) <= CHAR(m);
+                    INST(14) <= CHAR_ASCII(x"3A");  -- ':'
+                    case altura_selec is
+                        when 1 => -- Baja -> Baj
+                            INST(15) <= CHAR(Mb); INST(16) <= CHAR(a); INST(17) <= CHAR(j);
+                        when 2 => -- Media -> Med
+                            INST(15) <= CHAR(Mm); INST(16) <= CHAR(e); INST(17) <= CHAR(d);
+                        when 3 => -- Alta -> Alt
+                            INST(15) <= CHAR(Ma); INST(16) <= CHAR(l); INST(17) <= CHAR(t);
+                        when others =>
+                            INST(15) <= CHAR_ASCII(x"2D"); INST(16) <= CHAR_ASCII(x"2D"); INST(17) <= CHAR_ASCII(x"2D");
+                    end case;
+                    INST(18) <= CHAR_ASCII(x"20"); INST(19) <= CHAR_ASCII(x"20");
+                    
+                    -- L2: Magnetico
+                    -- Formato: "Mag:Si/No       "
+                    INST(20) <= POS(2,1);
+                    INST(21) <= CHAR(Mm);  INST(22) <= CHAR(a);  INST(23) <= CHAR(g);
+                    INST(24) <= CHAR_ASCII(x"3A");  -- ':'
+                    case magnet_selec is
+                        when 1 => -- Si
+                            INST(25) <= CHAR(MAs); INST(26) <= CHAR(i);
+                            INST(27) <= CHAR_ASCII(x"20"); INST(28) <= CHAR_ASCII(x"20");
+                        when 2 => -- No
+                            INST(25) <= CHAR(Mn); INST(26) <= CHAR(o);
+                            INST(27) <= CHAR_ASCII(x"20"); INST(28) <= CHAR_ASCII(x"20");
+                        when others =>
+                            INST(25) <= CHAR_ASCII(x"2D"); INST(26) <= CHAR_ASCII(x"2D");
+                            INST(27) <= CHAR_ASCII(x"20"); INST(28) <= CHAR_ASCII(x"20");
+                    end case;
+                    INST(29) <= CHAR_ASCII(x"20");
+                    -- Metal en la misma linea
+                    INST(30) <= CHAR(Mm);  INST(31) <= CHAR(e);  INST(32) <= CHAR(t);
+                    INST(33) <= CHAR_ASCII(x"3A");  -- ':'
+                    case metal_selec is
+                        when 1 => -- Si
+                            INST(34) <= CHAR(MAs); INST(35) <= CHAR(i); INST(36) <= CHAR_ASCII(x"20");
+                        when 2 => -- No
+                            INST(34) <= CHAR(Mn); INST(35) <= CHAR(o); INST(36) <= CHAR_ASCII(x"20");
+                        when others =>
+                            INST(34) <= CHAR_ASCII(x"2D"); INST(35) <= CHAR_ASCII(x"2D"); INST(36) <= CHAR_ASCII(x"20");
+                    end case;
+                    
+                    -- L3: Estado sensado
+                    INST(37) <= POS(3,1);
+                    INST(38) <= CHAR(Me);  INST(39) <= CHAR(s);  INST(40) <= CHAR(p);
+                    INST(41) <= CHAR(e);   INST(42) <= CHAR(r);  INST(43) <= CHAR(a);
+                    INST(44) <= CHAR(n);   INST(45) <= CHAR(d);  INST(46) <= CHAR(o);
+                    INST(47) <= CHAR_ASCII(x"2E"); INST(48) <= CHAR_ASCII(x"2E"); INST(49) <= CHAR_ASCII(x"2E");
+                    INST(50) <= CHAR_ASCII(x"20"); INST(51) <= CHAR_ASCII(x"20");
+                    INST(52) <= CHAR_ASCII(x"20"); INST(53) <= CHAR_ASCII(x"20");
+                    INST(54) <= CHAR_ASCII(x"20"); INST(55) <= CHAR_ASCII(x"20");
+                    
+                    -- L4: Instruccion reset
+                    INST(56) <= POS(4,1);
+                    INST(57) <= CHAR(MAs); INST(58) <= CHAR(w);  INST(59) <= CHAR_ASCII(x"20");
+                    INST(60) <= CHAR(p);   INST(61) <= CHAR_ASCII(x"2F");
+                    INST(62) <= CHAR(r);   INST(63) <= CHAR(e);  INST(64) <= CHAR(s);
+                    INST(65) <= CHAR(e);   INST(66) <= CHAR(t);  INST(67) <= CHAR_ASCII(x"20");
+                    INST(68) <= CHAR_ASCII(x"20"); INST(69) <= CHAR_ASCII(x"20");
+                    INST(70) <= CHAR_ASCII(x"20"); INST(71) <= CHAR_ASCII(x"20");
+                    INST(72) <= CHAR_ASCII(x"20");
+                    
+                    INST(73) <= BUCLE_FIN(1);
+                    INST(74) <= CODIGO_FIN(1);
+                    
+                    when others =>
+                        INST(3)  <= CODIGO_FIN(1);
+                        
+                end case;
+            end if;  -- Fin de if lcd_actualizar
+        end if;  -- Fin de if rising_edge(CLK)
+    end process;
+
+end Behavioral;

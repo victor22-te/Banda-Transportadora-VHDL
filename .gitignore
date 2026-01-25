@@ -1,0 +1,62 @@
+# Vivado Project Files
+*.jou
+*.log
+*.str
+*.zip
+*.tmp
+*.cache
+*.hw
+*.ip_user_files
+*.sim
+*.runs
+*.xpr.backup
+
+# Vivado Build Directories
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.runs/
+
+# Python Virtual Environment
+venv/
+env/
+ENV/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+
+# Python IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary Files
+*.bak
+*.old
+*.orig
+
+# Keep these important files
+!*.vhd
+!*.xdc
+!*.py
+!*.md
+!*.txt
+!*.png
+!*.jpg
+!*.bat
+!color_nn_data/
+
+# Vivado specific - keep source files but ignore build artifacts
+!*.srcs/sources_1/**/*.vhd
+!*.srcs/constrs_1/**/*.xdc

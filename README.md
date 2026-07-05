@@ -1,5 +1,18 @@
 # 🏭 Banda4Bits Chido 1.0
 
+![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
+![Platform](https://img.shields.io/badge/Platform-FPGA%20%7C%20VHDL-blue?style=for-the-badge)
+![License](https://img.shields.io/badge/License-Educational-green?style=for-the-badge)
+
+<div align="center">
+  <img src="https://img.shields.io/badge/VHDL-03234B?style=flat-square&logo=v&logoColor=white" alt="VHDL" />
+  <img src="https://img.shields.io/badge/FPGA_Spartan--7-F39C12?style=flat-square" alt="FPGA Spartan-7" />
+  <img src="https://img.shields.io/badge/TensorFlow-FF6F00?style=flat-square&logo=tensorflow&logoColor=white" alt="TensorFlow" />
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/OpenCV-5C3EE8?style=flat-square&logo=opencv&logoColor=white" alt="OpenCV" />
+  <img src="https://img.shields.io/badge/L298N%20Motor-E74C3C?style=flat-square" alt="Motor" />
+</div>
+
 > Sistema de clasificación de objetos con interfaz de menú LCD y control de motor implementado en VHDL para FPGA Boolean Board.
 
 <div align="center">

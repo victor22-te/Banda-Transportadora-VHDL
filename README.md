@@ -6,7 +6,7 @@
 
 <div align="center">
   <img src="https://img.shields.io/badge/VHDL-03234B?style=flat-square&logo=v&logoColor=white" alt="VHDL" />
-  <img src="https://img.shields.io/badge/FPGA_Spartan--7-F39C12?style=flat-square" alt="FPGA Spartan-7" />
+  <img src="https://img.shields.io/badge/FPGA_Spartan--7-F39C12?style=flat-square" alt="FPGA Boolean-Board" />
   <img src="https://img.shields.io/badge/TensorFlow-FF6F00?style=flat-square&logo=tensorflow&logoColor=white" alt="TensorFlow" />
   <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/OpenCV-5C3EE8?style=flat-square&logo=opencv&logoColor=white" alt="OpenCV" />

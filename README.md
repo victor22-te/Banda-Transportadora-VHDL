@@ -422,10 +422,9 @@ BAUD_RATE = 9600      # Velocidad de comunicación
 
 ---
 
-## 👨‍💻 Autor
+## 👨‍💻 Autores
 
-### **Victor Francisco Villafaña Hernández**
-
-Proyecto desarrollado para FPGA Boolean Board.
+### * **Victor Francisco Villafaña Hernández**
+### * **Carlos Alberto García Mera**
 
 ---

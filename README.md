@@ -5,7 +5,7 @@
 <div align="center">
   <img src="assets/banda-proyecto-fisico.jpeg" width="600" alt="Banda Proyecto Fisico" />
   <br><br>
-  <video src="assets/video-clasificacion.mp4" width="600" controls autoplay loop muted></video>
+  <img src="assets/video-clasificacion.gif" width="600" alt="Video Clasificacion" />
 </div>
 
 ---

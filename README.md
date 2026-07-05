@@ -2,6 +2,9 @@
 
 > Sistema de clasificación de objetos con interfaz de menú LCD y control de motor implementado en VHDL para FPGA Boolean Board.
 
+![Banda Proyecto Fisico](assets/banda-proyecto-fisico.jpeg)
+![Video Clasificacion](assets/video-clasificacion.gif)
+
 ---
 
 ## 📋 Descripción General

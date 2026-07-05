@@ -60,3 +60,7 @@ desktop.ini
 # Vivado specific - keep source files but ignore build artifacts
 !*.srcs/sources_1/**/*.vhd
 !*.srcs/constrs_1/**/*.xdc
+
+
+#videos
+*.mp4

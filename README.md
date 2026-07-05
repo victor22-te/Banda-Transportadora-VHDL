@@ -427,7 +427,7 @@ BAUD_RATE = 9600      # Velocidad de comunicación
 
 ## 👨‍💻 Autores
 
-### * **Victor Francisco Villafaña Hernández**
-### * **Carlos Alberto García Mera**
+### - **Victor Francisco Villafaña Hernández**
+### - **Carlos Alberto García Mera**
 
 ---

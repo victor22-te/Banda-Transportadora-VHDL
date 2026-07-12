@@ -1,4 +1,4 @@
-# 🏭 Banda4Bits Chido 1.0
+# Banda4Bits Chido 1.0
 
 ![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-FPGA%20%7C%20VHDL-blue?style=for-the-badge)
@@ -23,13 +23,13 @@
 
 ---
 
-## 📋 Descripción General
+## Descripción General
 
 Este proyecto implementa un **sistema de clasificación de objetos** sobre una banda transportadora. El usuario selecciona las características del objeto a buscar (color, tamaño y propiedades magnéticas) a través de un menú interactivo en un **LCD 20x4** controlado por un **teclado matricial 4x4**. Una vez configurado, el sistema usa un **sensor infrarrojo** para detectar objetos y controla un **motor DC** mediante un puente H L298N.
 
 ---
 
-## 🎯 Características Principales
+## Características Principales
 
 | Característica | Descripción |
 |----------------|-------------|
@@ -44,33 +44,33 @@ Este proyecto implementa un **sistema de clasificación de objetos** sobre una b
 
 ---
 
-## 📁 Estructura del Proyecto
+## Estructura del Proyecto
 
 ```
 Banda4Bits_chido1.0/
 ├── Banda4Bits_chido1.0.srcs/
 │   ├── sources_1/new/
-│   │   ├── BandaChido.vhd        # 🧠 Módulo principal (menú + lógica + UART)
-│   │   ├── ControlMotor.vhd      # ⚙️ Control del motor (L298N)
-│   │   ├── InfraRojo.vhd         # 📡 Sensor IR con debounce
-│   │   ├── Teclado.vhd           # ⌨️ Teclado matricial 4x4
-│   │   ├── ProcesadorLCD.vhd     # 📺 Procesador LCD 4 bits
-│   │   ├── ComandosLCD.vhd       # 📚 Librería de comandos LCD
-│   │   └── Caracteres.vhd        # 🔤 Definición de caracteres
+│   │   ├── BandaChido.vhd        #  Módulo principal (menú + lógica + UART)
+│   │   ├── ControlMotor.vhd      #  Control del motor (L298N)
+│   │   ├── InfraRojo.vhd         #  Sensor IR con debounce
+│   │   ├── Teclado.vhd           #  Teclado matricial 4x4
+│   │   ├── ProcesadorLCD.vhd     #  Procesador LCD 4 bits
+│   │   ├── ComandosLCD.vhd       #  Librería de comandos LCD
+│   │   └── Caracteres.vhd        #  Definición de caracteres
 │   └── constrs_1/new/
-│       └── constBanda.xdc        # 📌 Asignación de pines
-├── venv/                          # 🐍 Entorno virtual Python
-├── color_nn_data/                 # 💾 Datos y modelo entrenado
-├── ColorNN.py                     # 🎨 Clasificador de colores con Red Neuronal
-├── requirements.txt               # 📦 Dependencias Python
-├── run_colornn.bat                # ▶️ Script para ejecutar ColorNN
-├── Banda4Bits_chido1.0.xpr        # 📄 Archivo proyecto Vivado
-└── README.md                      # 📖 Este archivo
+│       └── constBanda.xdc        #  Asignación de pines
+├── venv/                          #  Entorno virtual Python
+├── color_nn_data/                 #  Datos y modelo entrenado
+├── ColorNN.py                     #  Clasificador de colores con Red Neuronal
+├── requirements.txt               #  Dependencias Python
+├── run_colornn.bat                #  Script para ejecutar ColorNN
+├── Banda4Bits_chido1.0.xpr        #  Archivo proyecto Vivado
+└── README.md                      #  Este archivo
 ```
 
 ---
 
-## 🔌 Conexiones de Hardware
+## Conexiones de Hardware
 
 ### Pinout de la Boolean Board
 
@@ -121,7 +121,7 @@ Banda4Bits_chido1.0/
 
 ---
 
-## 📱 Flujo del Menú
+## Flujo del Menú
 
 El sistema tiene **5 estados de menú**:
 
@@ -186,7 +186,7 @@ El sistema tiene **5 estados de menú**:
 
 ---
 
-## ⚙️ Funcionamiento del Sistema
+## Funcionamiento del Sistema
 
 ### Proceso de Sensado Automático Completo
 
@@ -275,7 +275,7 @@ El sistema implementa una **máquina de estados** para el proceso de clasificaci
 
 ---
 
-## 🚀 Cómo Usar
+## Cómo Usar
 
 ### Requisitos
 
@@ -331,7 +331,7 @@ El sistema implementa una **máquina de estados** para el proceso de clasificaci
 
 ---
 
-## 📦 Módulos VHDL
+## Módulos VHDL
 
 ### `BandaChido.vhd` (Módulo Principal)
 - **Entidad**: `LIB_LCD_MENU_TECLADO`
@@ -359,7 +359,7 @@ El sistema implementa una **máquina de estados** para el proceso de clasificaci
 
 ---
 
-## 🎨 ColorNN - Clasificador de Colores con Red Neuronal
+## ColorNN - Clasificador de Colores con Red Neuronal
 
 Sistema de visión por computadora que clasifica colores usando TensorFlow.
 
@@ -419,7 +419,7 @@ BAUD_RATE = 9600      # Velocidad de comunicación
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 | Problema | Solución |
 |----------|----------|
@@ -430,7 +430,7 @@ BAUD_RATE = 9600      # Velocidad de comunicación
 
 ---
 
-## 📝 Notas de Desarrollo
+## Notas de Desarrollo
 
 - El proyecto usa un reloj de **100 MHz** (Boolean Board)
 - El LCD opera en **modo 4 bits** para ahorrar pines
@@ -438,7 +438,7 @@ BAUD_RATE = 9600      # Velocidad de comunicación
 
 ---
 
-## 👨‍💻 Autores
+## Autores
 
 ### - **Victor Francisco Villafaña Hernández**
 ### - **Carlos Alberto García Mera**
